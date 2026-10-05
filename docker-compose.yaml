@@ -1,0 +1,91 @@
+name: dhcp-server
+
+services:
+  kea4:
+    image: docker.cloudsmith.io/isc/docker/kea-dhcp4:${VERSION}
+    restart: always
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          pidof kea-dhcp4 > /dev/null &&
+          netstat -an | grep -q ${IP4}:67
+    depends_on: # delay start until database is ready
+      db:
+        condition: service_healthy
+    networks:
+      kea-10-ipvlan: # network that binds container to host network interface.
+        interface_name: eth0 # interface name inside container, must match the one in kea4.conf
+        ipv4_address: ${IP4} # ip for kea4 server
+        ipv6_address: ${IP4_V6} # set static to avoid conflicts with kea6
+      kea-20-backend: # internal network for communication with database
+        interface_name: eth1 # interface name inside container, must match the one in kea4.conf
+    volumes:
+      - type: bind
+        source: ./config/kea # configuration files
+        target: /etc/kea
+      - kea4-var:/var/lib/kea
+
+  kea6:
+    image: docker.cloudsmith.io/isc/docker/kea-dhcp6:${VERSION}
+    restart: always
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          pidof kea-dhcp6 > /dev/null &&
+          netstat -an | grep -q ${IP6}:547
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      kea-10-ipvlan: # network that binds container to host network interface.
+        interface_name: eth0 # interface name inside container, must match the one in kea6.conf
+        ipv4_address: ${IP6_V4} # ip for kea6 server
+        ipv6_address: ${IP6} # set static to avoid conflicts with kea4
+      kea-20-backend: # internal network for communication with database
+        interface_name: eth1 # interface name inside container, must match the one in kea6.conf
+    volumes:
+      - type: bind
+        source: ./config/kea # configuration files
+        target: /etc/kea
+      - kea6-var:/var/lib/kea
+
+  db:
+    image: postgres:18.4-alpine3.24
+    restart: always
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - psql -U keadb -d keadb -c 'SELECT version FROM schema_version'
+    environment:
+      POSTGRES_PASSWORD: "@lunoFat3c"
+      POSTGRES_USER: keadb
+    volumes:
+      - database:/var/lib/postgresql
+      - type: bind
+        source: ./initdb # database setup script from kea for first run
+        target: /docker-entrypoint-initdb.d
+    networks:
+      kea-20-backend:
+
+volumes:
+  database:
+  kea4-var:
+  kea6-var:
+
+networks:
+  kea-10-ipvlan: # network that binds container to host network interface.
+    name: kea-10-ipvlan
+    driver: ipvlan
+    driver_opts:
+      parent: ${ETH} #  host interface that kea containers will use !!!!!!
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: ${SUBNET4} # subnet for kea4 server
+        #  gateway: ${GATEWAY4}
+        - subnet: ${SUBNET6} # subnet for kea6 server
+        #  gateway: ${GATEWAY6}
+  kea-20-backend: # internal network for communication with database
+    name: kea-20-backend
